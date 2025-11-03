@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Clock, Users, BarChart } from "lucide-react";
+import { Clock, Users } from "lucide-react";
 import Link from "next/link";
 
 const courses = {
