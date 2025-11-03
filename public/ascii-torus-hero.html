@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ASCII Torus Hero</title>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      background: radial-gradient(120% 120% at 30% 30%, rgba(54, 37, 112, 0.35), transparent 58%),
+        linear-gradient(120deg, #0c0b14 0%, #121025 100%);
+      font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+      color: #f6f4ff;
+    }
+
+    .hero {
+      flex: 1;
+      display: grid;
+      grid-template-columns: minmax(240px, 1fr) minmax(320px, 1fr);
+      align-items: center;
+      width: min(1200px, 100%);
+      padding: clamp(2.5rem, 6vw, 6rem);
+      gap: clamp(2rem, 6vw, 6rem);
+    }
+
+    .hero-left {
+      min-height: 220px;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+      justify-content: center;
+    }
+
+    .hero-right {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      min-height: 0;
+    }
+
+    .ascii-wrapper {
+      position: relative;
+      width: min(48vw, 560px);
+      height: min(80vh, 620px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      filter: drop-shadow(0 18px 45px rgba(42, 21, 112, 0.28));
+    }
+
+    .ascii-output {
+      margin: 0;
+      font-family: "Courier New", monospace;
+      font-size: clamp(9px, 1.6vw, 16px);
+      line-height: 1.06;
+      letter-spacing: 0.04em;
+      white-space: pre;
+      color: #c9b7ff;
+      background: transparent;
+      text-shadow: 0 0 12px rgba(104, 84, 196, 0.35);
+      user-select: none;
+      pointer-events: none;
+      will-change: transform;
+      transition: filter 0.6s ease;
+    }
+
+    @media (max-width: 960px) {
+      .hero {
+        grid-template-columns: 1fr;
+        grid-auto-rows: auto;
+        justify-items: center;
+      }
+
+      .hero-right {
+        width: 100%;
+        justify-content: center;
+      }
+
+      .ascii-wrapper {
+        width: min(82vw, 520px);
+        height: min(70vh, 520px);
+      }
+    }
+  </style>
+</head>
+<body>
+  <section class="hero">
+    <div class="hero-left">
+      <!-- Existing hero copy, headings, and buttons live here. -->
+    </div>
+    <div class="hero-right">
+      <div class="ascii-wrapper">
+        <pre id="torusAscii" class="ascii-output" aria-hidden="true"></pre>
+      </div>
+    </div>
+  </section>
+  <script>
+    (() => {
+      const output = document.getElementById('torusAscii');
+      const webglSupported = !!document.createElement('canvas').getContext('webgl');
+      if (!webglSupported || !output) {
+        return;
+      }
+
+      const width = 80;
+      const height = 40;
+      const sampleTheta = 120;
+      const samplePhi = 120;
+      const charRamp = '@%#*+=-:. ';
+      const frontColor = [0x00, 0x3e, 0x3b];
+      const backColor = [0xc9, 0xb7, 0xff];
+      const light = normalize([0.5, 0.5, 1.0]);
+      const cameraDistance = 8.0;
+      const radiusMajor = 2.2;
+      const radiusMinor = 1.0;
+      const scaleFactor = 0.4;
+      const perspective = 18.0;
+      const zBuffer = new Float32Array(width * height);
+      const charBuffer = new Array(width * height);
+      const colorBuffer = new Array(width * height);
+
+      let autoRotX = 0.0;
+      let autoRotY = 0.0;
+      const autoSpeedX = 0.78;
+      const autoSpeedY = 0.54;
+      const rotationLerp = 0.1;
+      const mouseInfluence = 0.35;
+      const targetRotation = { x: 0, y: 0 };
+      const smoothedRotation = { x: 0, y: 0 };
+      let lastPointerMove = performance.now();
+
+      let frameId = null;
+      let lastTime = performance.now();
+
+      document.addEventListener('mousemove', (event) => {
+        const rect = output.getBoundingClientRect();
+        const relativeX = (event.clientX - rect.left) / rect.width;
+        const relativeY = (event.clientY - rect.top) / rect.height;
+        targetRotation.y = (relativeX - 0.5) * Math.PI * mouseInfluence;
+        targetRotation.x = (relativeY - 0.5) * Math.PI * mouseInfluence;
+        lastPointerMove = performance.now();
+      });
+
+      function animate(now) {
+        frameId = window.requestAnimationFrame(animate);
+        const dt = Math.min((now - lastTime) / 1000, 0.05);
+        lastTime = now;
+
+        const idleElapsed = now - lastPointerMove;
+        const idleFactor = Math.min(1, idleElapsed / 1200);
+        const easing = 1 - Math.pow(1 - idleFactor, 3);
+        const pointerDecay = Math.exp(-dt * 3.2);
+
+        autoRotX += autoSpeedX * dt;
+        autoRotY += autoSpeedY * dt;
+
+        targetRotation.x *= pointerDecay;
+        targetRotation.y *= pointerDecay;
+
+        const lerpFactor = 1 - Math.pow(1 - rotationLerp, dt * 60);
+        smoothedRotation.x += ((autoRotX + targetRotation.x * (1 - easing)) - smoothedRotation.x) * lerpFactor;
+        smoothedRotation.y += ((autoRotY + targetRotation.y * (1 - easing)) - smoothedRotation.y) * lerpFactor;
+
+        render(now * 0.001);
+      }
+
+      function render(time) {
+        zBuffer.fill(-Infinity);
+
+        const baseAngleX = smoothedRotation.x;
+        const baseAngleY = smoothedRotation.y;
+
+        const cosX = Math.cos(baseAngleX);
+        const sinX = Math.sin(baseAngleX);
+        const cosY = Math.cos(baseAngleY);
+        const sinY = Math.sin(baseAngleY);
+
+        const gradientShift = 0.18 + 0.5 * Math.sin(time * 0.68);
+        const shimmerSpeed = 2.8;
+        const shimmerStrength = 0.77;
+        const outputHeight = output.clientHeight || output.offsetHeight || 400;
+        const sceneScale = Math.max(0.35, outputHeight * scaleFactor / height);
+        const perspectiveScale = perspective * sceneScale;
+
+        for (let i = 0; i < charBuffer.length; i++) {
+          charBuffer[i] = ' ';
+          colorBuffer[i] = '#000000';
+        }
+
+        for (let p = 0; p < samplePhi; p++) {
+          const phi = (p / samplePhi) * Math.PI * 2;
+          const cosPhi = Math.cos(phi);
+          const sinPhi = Math.sin(phi);
+
+          for (let t = 0; t < sampleTheta; t++) {
+            const theta = (t / sampleTheta) * Math.PI * 2;
+            const cosTheta = Math.cos(theta);
+            const sinTheta = Math.sin(theta);
+
+            const circleX = radiusMajor + radiusMinor * cosTheta;
+            const circleY = radiusMinor * sinTheta;
+
+            let x = circleX * cosPhi;
+            let y = circleY;
+            let z = circleX * sinPhi;
+
+            let nx = cosPhi * cosTheta;
+            let ny = sinTheta;
+            let nz = sinPhi * cosTheta;
+
+            let y1 = y * cosX - z * sinX;
+            let z1 = y * sinX + z * cosX;
+            let x1 = x;
+
+            let x2 = x1 * cosY + z1 * sinY;
+            let z2 = -x1 * sinY + z1 * cosY;
+            let y2 = y1;
+
+            let ny1 = ny * cosX - nz * sinX;
+            let nz1 = ny * sinX + nz * cosX;
+            let nx1 = nx;
+
+            let nx2 = nx1 * cosY + nz1 * sinY;
+            let nz2 = -nx1 * sinY + nz1 * cosY;
+            let ny2 = ny1;
+
+            const cameraZ = cameraDistance + z2;
+            const invZ = 1 / cameraZ;
+            const projectedX = width / 2 + (perspectiveScale * x2 * invZ);
+            const projectedY = height / 2 - (perspectiveScale * y2 * invZ * 0.9);
+
+            const ix = projectedX | 0;
+            const iy = projectedY | 0;
+
+            if (ix < 0 || ix >= width || iy < 0 || iy >= height) {
+              continue;
+            }
+
+            const idx = ix + iy * width;
+            if (invZ <= zBuffer[idx]) {
+              continue;
+            }
+
+            const normal = normalize([nx2, ny2, nz2]);
+            const viewDirection = normalize([-x2, -y2, cameraDistance - z2]);
+
+            const lambert = Math.max(dot(normal, light), 0.0);
+            const reflection = reflect(scale(light, -1), normal);
+            const specular = Math.pow(Math.max(dot(reflection, viewDirection), 0.0), 32) * 0.5;
+            const fresnel = 0.5 + 0.5 * Math.pow(1 - Math.max(dot(normal, viewDirection), 0), 3);
+            const brightness = clamp(lambert * 0.57 + specular * 0.5 + fresnel * 0.2, 0, 1);
+
+            const charIndex = Math.floor(brightness * (charRamp.length - 1));
+
+            const gx = (ix / (width - 1));
+            const shimmer = Math.sin((time * shimmerSpeed) + ix * 0.18 + iy * 0.12) * shimmerStrength * 0.12;
+            const shifted = clamp(gx + gradientShift * 0.12 + shimmer, 0, 1);
+            const baseColor = lerpColor(frontColor, backColor, shifted);
+            const luma = 0.27 * baseColor[0] + 0.67 * baseColor[1] + 0.06 * baseColor[2];
+            const tint = Math.sin(time * 1.4 + ix * 0.31 + iy * 0.17) * 0.77;
+            const chroma = adjustChroma(baseColor, tint * 0.45, luma);
+            const gloss = clamp(brightness * 0.43 + 0.18, 0, 1);
+            const finalColor = lerpColor(chroma, [255, 255, 255], gloss * 0.18);
+
+            zBuffer[idx] = invZ;
+            charBuffer[idx] = charRamp.charAt(charIndex);
+            colorBuffer[idx] = rgbToHex(finalColor);
+          }
+        }
+
+        let html = '';
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const i = x + y * width;
+            const ch = charBuffer[i];
+            if (ch === ' ') {
+              html += ' ';
+            } else {
+              html += '<span style="color:' + colorBuffer[i] + '">' + ch + '</span>';
+            }
+          }
+          html += y === height - 1 ? '' : '\n';
+        }
+        output.innerHTML = html;
+      }
+
+      function normalize(vec) {
+        const length = Math.hypot(vec[0], vec[1], vec[2]);
+        return length === 0 ? [0, 0, 0] : [vec[0] / length, vec[1] / length, vec[2] / length];
+      }
+
+      function dot(a, b) {
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      }
+
+      function reflect(i, n) {
+        const d = dot(n, i);
+        return [i[0] - 2 * d * n[0], i[1] - 2 * d * n[1], i[2] - 2 * d * n[2]];
+      }
+
+      function scale(vec, amount) {
+        return [vec[0] * amount, vec[1] * amount, vec[2] * amount];
+      }
+
+      function clamp(value, min, max) {
+        return Math.min(Math.max(value, min), max);
+      }
+
+      function lerpColor(a, b, t) {
+        return [
+          a[0] + (b[0] - a[0]) * t,
+          a[1] + (b[1] - a[1]) * t,
+          a[2] + (b[2] - a[2]) * t
+        ];
+      }
+
+      function rgbToHex(color) {
+        const r = Math.round(clamp(color[0], 0, 255)).toString(16).padStart(2, '0');
+        const g = Math.round(clamp(color[1], 0, 255)).toString(16).padStart(2, '0');
+        const b = Math.round(clamp(color[2], 0, 255)).toString(16).padStart(2, '0');
+        return `#${r}${g}${b}`;
+      }
+
+      function adjustChroma(color, intensity, luma) {
+        const factor = 1 + intensity * 0.68;
+        const r = clamp((color[0] - luma) * factor + luma, 0, 255);
+        const g = clamp((color[1] - luma) * factor + luma, 0, 255);
+        const b = clamp((color[2] - luma) * factor + luma, 0, 255);
+        return [r, g, b];
+      }
+
+      frameId = window.requestAnimationFrame(animate);
+
+      const visibilityHandler = () => {
+        if (document.hidden && frameId) {
+          cancelAnimationFrame(frameId);
+          frameId = null;
+        } else if (!document.hidden && !frameId) {
+          autoRotX = smoothedRotation.x;
+          autoRotY = smoothedRotation.y;
+          lastPointerMove = performance.now();
+          frameId = window.requestAnimationFrame(animate);
+        }
+      };
+
+      document.addEventListener('visibilitychange', visibilityHandler);
+    })();
+  </script>
+</body>
+</html>
