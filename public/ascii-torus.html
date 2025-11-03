@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ASCII Torus Hero</title>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      background: linear-gradient(110deg, #0c0b14 0%, #121025 100%);
+      font-family: "Courier New", monospace;
+      color: #f4f5ff;
+    }
+
+    .hero {
+      width: min(1100px, 100vw);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      align-items: center;
+      padding: clamp(2rem, 6vw, 4rem);
+      gap: clamp(2rem, 6vw, 4rem);
+    }
+
+    .hero__left {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      color: rgba(255, 255, 255, 0.85);
+    }
+
+    .hero__right {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 320px;
+      height: calc(100vh - clamp(6rem, 12vh, 10rem));
+      max-height: 680px;
+    }
+
+    .ascii-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      height: 100%;
+    }
+
+    pre#torus-ascii {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      font-family: "Courier New", monospace;
+      font-weight: 500;
+      letter-spacing: 0.08em;
+      white-space: pre;
+      color: #7dd5ff;
+      text-shadow: 0 0 4px rgba(127, 193, 255, 0.35);
+      filter: drop-shadow(0 10px 30px rgba(18, 16, 37, 0.65));
+      overflow: hidden;
+      transition: transform 0.6s ease;
+      user-select: none;
+      pointer-events: none;
+    }
+
+    pre#torus-ascii span {
+      display: inline-block;
+      transition: color 0.2s linear;
+    }
+
+    @media (max-width: 900px) {
+      .hero {
+        grid-template-columns: 1fr;
+      }
+
+      .hero__right {
+        order: -1;
+        min-height: 280px;
+        height: min(60vh, 420px);
+      }
+    }
+  </style>
+</head>
+<body>
+  <section class="hero">
+    <div class="hero__left">
+      <!-- Existing hero text and buttons would live here -->
+    </div>
+    <div class="hero__right">
+      <div class="ascii-wrapper">
+        <pre id="torus-ascii"></pre>
+      </div>
+    </div>
+  </section>
+  <script>
+    (() => {
+      const pre = document.getElementById('torus-ascii');
+      const wrapper = document.querySelector('.ascii-wrapper');
+      const webglTestCanvas = document.createElement('canvas');
+      const gl = webglTestCanvas.getContext('webgl') || webglTestCanvas.getContext('experimental-webgl');
+
+      if (!gl) {
+        pre.textContent = '';
+        return;
+      }
+
+      const COLS = 80;
+      const ROWS = 40;
+      const asciiChars = '@%#*+=-:. ';
+      const majorRadius = 1.12;
+      const minorRadius = 0.52;
+      const cameraOffsetZ = 5.8;
+      const baseScaleX = COLS * 0.82;
+      const baseScaleY = ROWS * 1.18;
+      const lightDir = normalize([0.5, 0.5, 1]);
+      const reflectionBlend = 0.43;
+      const specularStrength = 0.5;
+      const fresnelStrength = 0.5;
+      const smoothing = 0.2;
+
+      const uSamples = 80;
+      const vSamples = 40;
+      const cosU = new Float32Array(uSamples);
+      const sinU = new Float32Array(uSamples);
+      const cosV = new Float32Array(vSamples);
+      const sinV = new Float32Array(vSamples);
+
+      for (let i = 0; i < uSamples; i++) {
+        const angle = (i / uSamples) * Math.PI * 2;
+        cosU[i] = Math.cos(angle);
+        sinU[i] = Math.sin(angle);
+      }
+
+      for (let j = 0; j < vSamples; j++) {
+        const angle = (j / vSamples) * Math.PI * 2;
+        cosV[j] = Math.cos(angle);
+        sinV[j] = Math.sin(angle);
+      }
+
+      const startColorHSL = hexToHsl('#003e3b');
+      const endColorHSL = hexToHsl('#c9b7ff');
+
+      let baseAngleX = 0;
+      let baseAngleY = 0;
+      let lastTime = performance.now();
+      let lastMouseMove = performance.now();
+      let mouseTargetX = 0;
+      let mouseTargetY = 0;
+      let smoothMouseX = 0;
+      let smoothMouseY = 0;
+
+      const zBuffer = new Float32Array(COLS * ROWS);
+      const charBuffer = new Array(COLS * ROWS);
+      const colorBuffer = new Array(COLS * ROWS);
+
+      function adjustFontSize() {
+        const { height } = wrapper.getBoundingClientRect();
+        const fontSize = Math.max(10, height / ROWS * 0.92);
+        pre.style.fontSize = fontSize + 'px';
+        pre.style.lineHeight = fontSize * 1.05 + 'px';
+      }
+
+      adjustFontSize();
+      window.addEventListener('resize', adjustFontSize);
+
+      window.addEventListener('mousemove', (event) => {
+        const rect = wrapper.getBoundingClientRect();
+        const nx = ((event.clientX - rect.left) / rect.width) - 0.5;
+        const ny = ((event.clientY - rect.top) / rect.height) - 0.5;
+        mouseTargetX = clamp(nx, -0.6, 0.6);
+        mouseTargetY = clamp(ny, -0.6, 0.6);
+        lastMouseMove = performance.now();
+      }, { passive: true });
+
+      function frame(now) {
+        const dt = (now - lastTime) / 1000;
+        lastTime = now;
+
+        baseAngleX += dt * 0.42;
+        baseAngleY += dt * 0.58;
+
+        if (now - lastMouseMove > 900) {
+          mouseTargetX *= 0.92;
+          mouseTargetY *= 0.92;
+        }
+
+        smoothMouseX += (mouseTargetX - smoothMouseX) * 0.08;
+        smoothMouseY += (mouseTargetY - smoothMouseY) * 0.08;
+
+        const rotationX = baseAngleX + smoothMouseY * 0.35;
+        const rotationY = baseAngleY + smoothMouseX * 0.35;
+        const sinX = Math.sin(rotationX);
+        const cosX = Math.cos(rotationX);
+        const sinY = Math.sin(rotationY);
+        const cosY = Math.cos(rotationY);
+
+        zBuffer.fill(-Infinity);
+        charBuffer.fill(undefined);
+        colorBuffer.fill(undefined);
+
+        const timeSeconds = now / 1000;
+        const colorShift = (0.68 + timeSeconds * 0.08) % 1;
+
+        for (let i = 0; i < uSamples; i++) {
+          const cu = cosU[i];
+          const su = sinU[i];
+
+          for (let j = 0; j < vSamples; j++) {
+            const cv = cosV[j];
+            const sv = sinV[j];
+
+            const circle = majorRadius + minorRadius * cv;
+            let x = circle * cu;
+            let y = circle * su;
+            let z = minorRadius * sv;
+
+            let nx = cv * cu;
+            let ny = cv * su;
+            let nz = sv;
+
+            // rotate around X axis
+            let y1 = y * cosX - z * sinX;
+            let z1 = y * sinX + z * cosX;
+            let ny1 = ny * cosX - nz * sinX;
+            let nz1 = ny * sinX + nz * cosX;
+
+            // rotate around Y axis
+            let x2 = x * cosY + z1 * sinY;
+            let z2 = -x * sinY + z1 * cosY;
+            let nx2 = nx * cosY + nz1 * sinY;
+            let nz2 = -nx * sinY + nz1 * cosY;
+
+            const px = x2;
+            const py = y1;
+            const pz = z2 + cameraOffsetZ;
+
+            if (pz <= 0.2) continue;
+
+            const invZ = 1 / pz;
+            const screenX = Math.floor(COLS / 2 + px * invZ * baseScaleX);
+            const screenY = Math.floor(ROWS / 2 - py * invZ * baseScaleY);
+
+            if (screenX < 0 || screenX >= COLS || screenY < 0 || screenY >= ROWS) {
+              continue;
+            }
+
+            const bufferIndex = screenX + screenY * COLS;
+            if (invZ <= zBuffer[bufferIndex]) {
+              continue;
+            }
+
+            const normal = normalize([nx2, ny1, nz2]);
+            const viewDir = normalize([-px, -py, -pz]);
+            const lambert = Math.max(0, dot(normal, lightDir));
+            const halfVector = normalize([lightDir[0] + viewDir[0], lightDir[1] + viewDir[1], lightDir[2] + viewDir[2]]);
+            const specular = specularStrength * Math.pow(Math.max(0, dot(normal, halfVector)), 32);
+            const fresnel = fresnelStrength * Math.pow(1 - Math.max(0, dot(normal, viewDir)), 3);
+
+            let intensity = lambert * (1 - reflectionBlend) + reflectionBlend * Math.pow(lambert, 0.55);
+            intensity += specular + fresnel;
+            intensity = Math.pow(clamp(intensity, 0, 1), 1 - smoothing);
+
+            const colNorm = screenX / (COLS - 1);
+            const color = computeColor(colNorm, screenX, screenY, intensity, specular, fresnel, colorShift, timeSeconds);
+            const charIndex = Math.min(asciiChars.length - 1, Math.max(0, Math.round((1 - intensity) * (asciiChars.length - 1))));
+            const character = asciiChars.charAt(charIndex);
+
+            zBuffer[bufferIndex] = invZ;
+            charBuffer[bufferIndex] = character;
+            colorBuffer[bufferIndex] = color;
+          }
+        }
+
+        let html = '';
+        for (let row = 0; row < ROWS; row++) {
+          for (let col = 0; col < COLS; col++) {
+            const idx = col + row * COLS;
+            const character = charBuffer[idx] || ' ';
+            const color = colorBuffer[idx] || 'rgba(15, 17, 34, 0.18)';
+            const displayChar = character === ' ' ? '&nbsp;' : character;
+            html += `<span style="color:${color}">${displayChar}</span>`;
+          }
+          if (row !== ROWS - 1) {
+            html += '<br />';
+          }
+        }
+
+        pre.innerHTML = html;
+        requestAnimationFrame(frame);
+      }
+
+      requestAnimationFrame(frame);
+
+      function computeColor(t, x, y, intensity, specular, fresnel, shift, timeSeconds) {
+        const tt = (t + shift) % 1;
+        const hue = lerpAngle(startColorHSL.h, endColorHSL.h, tt);
+        const sat = clamp(lerp(startColorHSL.s, endColorHSL.s, tt), 0, 1);
+        const light = clamp(lerp(startColorHSL.l, endColorHSL.l, tt), 0, 1);
+
+        const noise = pseudoNoise(x * 0.37, y * 0.51, timeSeconds * 0.9);
+        const chromaWobble = 0.77;
+        const hueVar = hue + noise * chromaWobble * 18;
+        const satVar = clamp(sat + noise * chromaWobble * 0.16, 0, 1);
+        const shimmer = Math.sin(timeSeconds * 1.9 + x * 0.12 + y * 0.14) * 0.5 + 0.5;
+        let lightVar = clamp(light * (0.55 + intensity * 0.4) + shimmer * 0.07 * chromaWobble + specular * 0.35 + fresnel * 0.25, 0, 1);
+
+        const rgb = hslToRgb((hueVar % 360 + 360) % 360, satVar, lightVar);
+        const alpha = clamp(0.32 + intensity * 0.55 + specular * 0.35, 0, 1);
+        return `rgba(${Math.round(rgb.r)},${Math.round(rgb.g)},${Math.round(rgb.b)},${alpha.toFixed(3)})`;
+      }
+
+      function pseudoNoise(x, y, t) {
+        const v = Math.sin((x * 12.9898 + y * 78.233) * 2.0 + t * 6.2831);
+        const fract = v - Math.floor(v);
+        return fract * 2 - 1;
+      }
+
+      function normalize(vec) {
+        const len = Math.hypot(vec[0], vec[1], vec[2]);
+        if (len === 0) return [0, 0, 0];
+        return [vec[0] / len, vec[1] / len, vec[2] / len];
+      }
+
+      function dot(a, b) {
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      }
+
+      function clamp(value, min, max) {
+        return Math.min(Math.max(value, min), max);
+      }
+
+      function lerp(a, b, t) {
+        return a + (b - a) * t;
+      }
+
+      function lerpAngle(a, b, t) {
+        let diff = (b - a + 540) % 360 - 180;
+        return a + diff * t;
+      }
+
+      function hexToHsl(hex) {
+        const { r, g, b } = hexToRgb(hex);
+        return rgbToHsl(r, g, b);
+      }
+
+      function hexToRgb(hex) {
+        const clean = hex.replace('#', '');
+        const bigint = parseInt(clean, 16);
+        if (clean.length === 3) {
+          const r = ((bigint >> 8) & 0xf) * 17;
+          const g = ((bigint >> 4) & 0xf) * 17;
+          const b = (bigint & 0xf) * 17;
+          return { r, g, b };
+        }
+        const r = (bigint >> 16) & 255;
+        const g = (bigint >> 8) & 255;
+        const b = bigint & 255;
+        return { r, g, b };
+      }
+
+      function rgbToHsl(r, g, b) {
+        r /= 255;
+        g /= 255;
+        b /= 255;
+
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        let h, s;
+        const l = (max + min) / 2;
+
+        if (max === min) {
+          h = s = 0;
+        } else {
+          const d = max - min;
+          s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+          switch (max) {
+            case r:
+              h = (g - b) / d + (g < b ? 6 : 0);
+              break;
+            case g:
+              h = (b - r) / d + 2;
+              break;
+            default:
+              h = (r - g) / d + 4;
+              break;
+          }
+          h *= 60;
+        }
+        return { h, s, l };
+      }
+
+      function hslToRgb(h, s, l) {
+        h /= 360;
+        let r, g, b;
+
+        if (s === 0) {
+          r = g = b = l;
+        } else {
+          const hue2rgb = (p, q, t) => {
+            if (t < 0) t += 1;
+            if (t > 1) t -= 1;
+            if (t < 1 / 6) return p + (q - p) * 6 * t;
+            if (t < 1 / 2) return q;
+            if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+            return p;
+          };
+
+          const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+          const p = 2 * l - q;
+          r = hue2rgb(p, q, h + 1 / 3);
+          g = hue2rgb(p, q, h);
+          b = hue2rgb(p, q, h - 1 / 3);
+        }
+
+        return { r: r * 255, g: g * 255, b: b * 255 };
+      }
+    })();
+  </script>
+</body>
+</html>
